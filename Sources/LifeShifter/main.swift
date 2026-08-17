@@ -50,8 +50,7 @@ final class LifeShifterStore: ObservableObject {
 
     var elapsedText: String {
         guard let start = currentEntry?.startedAt else { return "--:--" }
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return String(format: "%d:%02d", seconds / 3600, seconds / 60 % 60)
+        return Self.formatElapsed(seconds: max(0, Int(now.timeIntervalSince(start))))
     }
 
     var statusText: String {
@@ -153,6 +152,10 @@ final class LifeShifterStore: ObservableObject {
             let rightRank = preferred.firstIndex(of: right.element.name.lowercased()) ?? Int.max
             return leftRank == rightRank ? left.offset < right.offset : leftRank < rightRank
         }.map(\.element)
+    }
+
+    static func formatElapsed(seconds: Int) -> String {
+        String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
     }
 }
 
@@ -379,6 +382,7 @@ enum SelfCheck {
         precondition(tokens == GoogleTokens(access: "test-access", refresh: "test-refresh"))
         let fieldError = TimetrackerClient.errorMessage(from: Data(#"{"activity_id":["Invalid activity."]}"#.utf8))
         precondition(fieldError == "activity_id: Invalid activity.")
+        precondition(LifeShifterStore.formatElapsed(seconds: 3_661) == "1:01:01")
         precondition(TimetrackerClient.baseURL.absoluteString == "https://api.timetracker.live/api/")
         print("LifeShifter self-check passed")
     }

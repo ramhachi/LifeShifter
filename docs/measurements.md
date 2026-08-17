@@ -19,6 +19,7 @@
 | 手動更新 | 更新後も同期済み表示、Keychainの再照会なし |
 | Switch | Deep Workへの切替、NOW表示、再起動後の復元に成功 |
 | 非trackable Activity | Work / Healthは400になることを確認し、操作ボタンから除外 |
+| 経過表示 | server同期後も記録継続を確認し、表示を時:分:秒へ変更 |
 | click-to-visual-feedback | ログイン後に測定 |
 
 初回install時にLaunchAgentと `open` の双方から二重起動したため、起動経路をLaunchAgentだけに修正した。再install後の単一プロセスを確認済み。
