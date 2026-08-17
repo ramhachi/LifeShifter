@@ -2,13 +2,13 @@
 set -eu
 
 repo_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)"
-app_dir="/Users/sota/Applications/LifeShifter.app"
-agent_file="/Users/sota/Library/LaunchAgents/com.sota.lifeshifter.plist"
+app_dir="${HOME:?}/Applications/LifeShifter.app"
+agent_file="${HOME:?}/Library/LaunchAgents/com.sota.lifeshifter.plist"
 
-[ "$repo_dir" = "/Users/sota/projects/apps/日々のFB管理APP" ]
-[ "$(dirname "$app_dir")" = "/Users/sota/Applications" ]
+[ -f "$repo_dir/Package.swift" ]
+[ "$(dirname "$app_dir")" = "${HOME:?}/Applications" ]
 [ "$(basename "$app_dir")" = "LifeShifter.app" ]
-[ "$(dirname "$agent_file")" = "/Users/sota/Library/LaunchAgents" ]
+[ "$(dirname "$agent_file")" = "${HOME:?}/Library/LaunchAgents" ]
 
 cd "$repo_dir"
 swift build -c release
