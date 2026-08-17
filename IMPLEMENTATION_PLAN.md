@@ -2,9 +2,15 @@
 
 更新日: 2026-08-17
 
-状態: 実装前・方針確定
+状態: Mac MVP 実装済み・実アカウント検証中
 
 正本: この文書のみ
+
+実装状況（2026-08-17）:
+
+- Phase 0: 公開WebクライアントとAPI `OPTIONS` から通信契約を確認済み
+- Phase 1: Mac常駐MVP、Keychain認証、固定パレット、30秒同期、LaunchAgentを実装済み
+- 残作業: LifeShifterへの実アカウントログイン後、Activity取得とswitchを実測
 
 ## 1. 結論
 
