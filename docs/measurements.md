@@ -17,7 +17,8 @@
 | Current entry | 未記録時の空bodyを `nil` として処理 |
 | Keychain | tokenを1項目へ保存し、起動後はメモリキャッシュを使用 |
 | 手動更新 | 更新後も同期済み表示、Keychainの再照会なし |
-| Switch | 実記録を変更するため未実施 |
+| Switch | Deep Workへの切替、NOW表示、再起動後の復元に成功 |
+| 非trackable Activity | Work / Healthは400になることを確認し、操作ボタンから除外 |
 | click-to-visual-feedback | ログイン後に測定 |
 
 初回install時にLaunchAgentと `open` の双方から二重起動したため、起動経路をLaunchAgentだけに修正した。再install後の単一プロセスを確認済み。

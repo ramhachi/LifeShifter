@@ -24,6 +24,6 @@ swift run LifeShifter --self-check
 
 起動後、「Googleでログイン」を押し、公式 Timetracker の認証画面で Google ログインを完了します。LifeShifter は Google のパスワードを取得・保存しません。認証完了後に timetracker.live が発行した token を1つのmacOS Keychain項目へ保存し、起動後のAPI通信ではメモリ上の値を再利用します。
 
-Activity は `研究 → Oedo → 業務 → 就活 → TOEIC → 学習 → ジム → 移動 → 生活 → 休憩 → 睡眠` の優先順で照合し、最大8件を表示します。該当しない Activity は Timetracker の返却順を維持します。
+Activity は `研究 → Oedo → 業務 → 就活 → TOEIC → 学習 → ジム → 移動 → 生活 → 休憩 → 睡眠` の優先順で照合し、記録可能なものだけを最大8件表示します。該当しない Activity は Timetracker の返却順を維持します。
 
 通信契約の根拠は [docs/timetracker-protocol.md](docs/timetracker-protocol.md) に記録しています。

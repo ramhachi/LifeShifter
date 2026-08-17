@@ -45,7 +45,7 @@ final class LifeShifterStore: ObservableObject {
     }
 
     var displayedActivities: [Activity] {
-        Array(Self.orderActivities(activities).prefix(8))
+        Array(Self.orderActivities(activities.filter(\.trackable)).prefix(8))
     }
 
     var elapsedText: String {
@@ -356,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum SelfCheck {
     static func run() throws {
         let decoder = JSONDecoder()
-        let activity = try decoder.decode(Activity.self, from: Data(##"{"id":7,"name":"研究","icon":null,"icon_color":"#123456","parent_id":null}"##.utf8))
+        let activity = try decoder.decode(Activity.self, from: Data(##"{"id":7,"name":"研究","icon":null,"icon_color":"#123456","parent_id":null,"trackable":true}"##.utf8))
         precondition(activity.id == 7 && activity.name == "研究")
 
         let current = try decoder.decode(CurrentEntry.self, from: Data(##"{"id":9,"activity_id":7,"activity_name":"研究","activity_icon":null,"activity_icon_color":"#123456","start_time":"2026-08-17T08:00:00Z","end_time":null,"is_active":true}"##.utf8))
@@ -366,15 +366,19 @@ enum SelfCheck {
 
         let response = try decoder.decode(SwitchResponse.self, from: Data(#"{"new_entry":{"id":10,"activity_id":8,"activity_name":"ジム","activity_icon":null,"activity_icon_color":null,"start_time":"2026-08-17T09:00:00Z","end_time":null,"is_active":true}}"#.utf8))
         precondition(response.newEntry.activityName == "ジム")
+        let switchBody = try JSONSerialization.jsonObject(with: JSONEncoder().encode(SwitchRequest(activityID: 8))) as? [String: Int]
+        precondition(switchBody == ["activity_id": 8])
 
         let ordered = LifeShifterStore.orderActivities([
-            Activity(id: 1, name: "その他", icon: nil, iconColor: nil, parentID: nil),
-            Activity(id: 2, name: "ジム", icon: nil, iconColor: nil, parentID: nil),
+            Activity(id: 1, name: "その他", icon: nil, iconColor: nil, parentID: nil, trackable: true),
+            Activity(id: 2, name: "ジム", icon: nil, iconColor: nil, parentID: nil, trackable: true),
             activity
         ])
         precondition(ordered.map { $0.name } == ["研究", "ジム", "その他"])
         let tokens = try GoogleAuthWindow.decodeTokens(from: #"{"access":"test-access","refresh":"test-refresh"}"#)
         precondition(tokens == GoogleTokens(access: "test-access", refresh: "test-refresh"))
+        let fieldError = TimetrackerClient.errorMessage(from: Data(#"{"activity_id":["Invalid activity."]}"#.utf8))
+        precondition(fieldError == "activity_id: Invalid activity.")
         precondition(TimetrackerClient.baseURL.absoluteString == "https://api.timetracker.live/api/")
         print("LifeShifter self-check passed")
     }

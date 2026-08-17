@@ -7,9 +7,10 @@ struct Activity: Codable, Identifiable, Equatable {
     let icon: String?
     let iconColor: String?
     let parentID: Int?
+    let trackable: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, icon
+        case id, name, icon, trackable
         case iconColor = "icon_color"
         case parentID = "parent_id"
     }
@@ -63,6 +64,14 @@ struct SwitchResponse: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case newEntry = "new_entry"
+    }
+}
+
+struct SwitchRequest: Encodable {
+    let activityID: Int
+
+    enum CodingKeys: String, CodingKey {
+        case activityID = "activity_id"
     }
 }
 
@@ -194,11 +203,10 @@ actor TimetrackerClient {
     }
 
     func switchTo(activityID: Int) async throws -> SwitchResponse {
-        struct SwitchBody: Encodable { let activityID: Int }
         return try await request(
             "time-tracking/switch/",
             method: "POST",
-            body: SwitchBody(activityID: activityID)
+            body: SwitchRequest(activityID: activityID)
         )
     }
 
@@ -271,11 +279,15 @@ actor TimetrackerClient {
         return true
     }
 
-    private static func errorMessage(from data: Data) -> String {
+    static func errorMessage(from data: Data) -> String {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
         for key in ["detail", "message", "error", "non_field_errors", "email", "password"] {
             if let value = object[key] as? String { return value }
             if let value = (object[key] as? [String])?.first { return value }
+        }
+        for key in object.keys.sorted() {
+            if let value = object[key] as? String { return "\(key): \(value)" }
+            if let value = (object[key] as? [String])?.first { return "\(key): \(value)" }
         }
         return ""
     }

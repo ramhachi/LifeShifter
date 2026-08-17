@@ -59,7 +59,7 @@ POST token/refresh/
 GET activities/
 ```
 
-MVP が読むフィールドは `id`, `name`, `icon`, `icon_color`, `parent_id` のみ。
+MVP が読むフィールドは `id`, `name`, `icon`, `icon_color`, `parent_id`, `trackable` のみ。操作ボタンは `trackable == true` のActivityだけに限定する。
 
 ### Current entry
 
@@ -80,6 +80,8 @@ POST time-tracking/switch/
 ```
 
 公式クライアントは `response.new_entry` を新しい current entry として使う。
+
+Swift propertyの `activityID` は明示的なCodingKeyで `activity_id` へencodeする。実APIでは誤って `activityID` を送るとHTTP 400と `activity_id: This field is required.` が返る。
 
 ## 今回使わない確認済み操作
 
