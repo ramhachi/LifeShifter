@@ -361,6 +361,8 @@ enum SelfCheck {
 
         let current = try decoder.decode(CurrentEntry.self, from: Data(##"{"id":9,"activity_id":7,"activity_name":"研究","activity_icon":null,"activity_icon_color":"#123456","start_time":"2026-08-17T08:00:00Z","end_time":null,"is_active":true}"##.utf8))
         precondition(current.activityID == 7 && current.startedAt != nil)
+        let noCurrent = try decoder.decode(CurrentEntry?.self, from: Data("null".utf8))
+        precondition(noCurrent == nil)
 
         let response = try decoder.decode(SwitchResponse.self, from: Data(#"{"new_entry":{"id":10,"activity_id":8,"activity_name":"ジム","activity_icon":null,"activity_icon_color":null,"start_time":"2026-08-17T09:00:00Z","end_time":null,"is_active":true}}"#.utf8))
         precondition(response.newEntry.activityName == "ジム")

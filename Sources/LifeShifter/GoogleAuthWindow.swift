@@ -52,6 +52,7 @@ final class GoogleAuthWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWi
             defer: false
         )
         window.title = "Timetracker — Googleログイン"
+        window.animationBehavior = .none
         window.contentView = webView
         window.delegate = self
         window.center()
@@ -102,6 +103,7 @@ final class GoogleAuthWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWi
             defer: false
         )
         popupWindow.title = "Googleログイン"
+        popupWindow.animationBehavior = .none
         popupWindow.contentView = popup
         popupWindow.center()
         popupWindow.makeKeyAndOrderFront(nil)
@@ -110,7 +112,10 @@ final class GoogleAuthWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWi
     }
 
     func webViewDidClose(_ webView: WKWebView) {
-        popupWindows.removeValue(forKey: ObjectIdentifier(webView))?.close()
+        let key = ObjectIdentifier(webView)
+        DispatchQueue.main.async { [weak self] in
+            self?.popupWindows.removeValue(forKey: key)?.orderOut(nil)
+        }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -142,9 +147,12 @@ final class GoogleAuthWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWi
     private func finish(_ result: Result<GoogleTokens, Error>) {
         guard !finished else { return }
         finished = true
-        for popupWindow in popupWindows.values { popupWindow.close() }
-        popupWindows.removeAll()
-        window?.close()
-        completion(result)
+        DispatchQueue.main.async { [self] in
+            for popupWindow in popupWindows.values { popupWindow.orderOut(nil) }
+            popupWindows.removeAll()
+            window?.orderOut(nil)
+            window = nil
+            completion(result)
+        }
     }
 }

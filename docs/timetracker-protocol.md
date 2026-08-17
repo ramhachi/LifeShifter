@@ -69,6 +69,8 @@ GET time-tracking/current/
 
 公式クライアントが使うフィールドは `id`, `activity_id`, `activity_name`, `activity_icon`, `activity_icon_color`, `start_time`, `end_time`, `is_active`。
 
+実アカウントで未記録状態を確認したところ、HTTP成功かつ空bodyが返った。LifeShifterはこの場合だけJSONの `null` と同等に扱う。
+
 ### Switch
 
 ```http

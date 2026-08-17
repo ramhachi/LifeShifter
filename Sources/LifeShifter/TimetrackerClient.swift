@@ -74,6 +74,7 @@ private struct RefreshResponse: Decodable {
 enum TimetrackerError: LocalizedError {
     case signedOut
     case invalidResponse
+    case decoding(String)
     case server(Int, String)
 
     var errorDescription: String? {
@@ -82,6 +83,8 @@ enum TimetrackerError: LocalizedError {
             return "ログインが必要です"
         case .invalidResponse:
             return "Timetrackerから不正な応答を受信しました"
+        case let .decoding(message):
+            return "Timetracker応答の形式が未対応です: \(message)"
         case let .server(status, message):
             return message.isEmpty ? "Timetrackerエラー (HTTP \(status))" : message
         }
@@ -90,22 +93,48 @@ enum TimetrackerError: LocalizedError {
 
 enum TokenStore {
     private static let service = "com.sota.lifeshifter"
-    private static let accessAccount = "access-token"
-    private static let refreshAccount = "refresh-token"
+    private static let tokenAccount = "tokens"
+    private static let lock = NSLock()
+    private static var didLoad = false
+    private static var cachedTokens: StoredTokens?
 
-    static var hasAccessToken: Bool { read(account: accessAccount) != nil }
+    static var hasAccessToken: Bool { accessToken() != nil }
 
-    static func accessToken() -> String? { read(account: accessAccount) }
-    static func refreshToken() -> String? { read(account: refreshAccount) }
+    static func accessToken() -> String? { tokens()?.access }
+    static func refreshToken() -> String? { tokens()?.refresh }
 
     static func save(access: String, refresh: String) throws {
-        try write(access, account: accessAccount)
-        try write(refresh, account: refreshAccount)
+        let tokens = StoredTokens(access: access, refresh: refresh)
+        let value = String(decoding: try JSONEncoder().encode(tokens), as: UTF8.self)
+        try write(value, account: tokenAccount)
+        lock.lock()
+        cachedTokens = tokens
+        didLoad = true
+        lock.unlock()
     }
 
     static func clear() {
-        delete(account: accessAccount)
-        delete(account: refreshAccount)
+        delete(account: tokenAccount)
+        lock.lock()
+        cachedTokens = nil
+        didLoad = true
+        lock.unlock()
+    }
+
+    private struct StoredTokens: Codable {
+        let access: String
+        let refresh: String
+    }
+
+    private static func tokens() -> StoredTokens? {
+        lock.lock()
+        defer { lock.unlock() }
+        if !didLoad {
+            cachedTokens = read(account: tokenAccount)
+                .flatMap { try? JSONDecoder().decode(StoredTokens.self, from: Data($0.utf8)) }
+            didLoad = true
+        }
+        return cachedTokens
     }
 
     private static func read(account: String) -> String? {
@@ -220,9 +249,10 @@ actor TimetrackerClient {
             throw TimetrackerError.server(http.statusCode, Self.errorMessage(from: data))
         }
         do {
-            return try decoder.decode(type, from: data)
+            let json = data.isEmpty ? Data("null".utf8) : data
+            return try decoder.decode(type, from: json)
         } catch {
-            throw TimetrackerError.invalidResponse
+            throw TimetrackerError.decoding(Self.decodingMessage(error))
         }
     }
 
@@ -248,5 +278,18 @@ actor TimetrackerClient {
             if let value = (object[key] as? [String])?.first { return value }
         }
         return ""
+    }
+
+    private static func decodingMessage(_ error: Error) -> String {
+        switch error {
+        case let DecodingError.typeMismatch(_, context),
+             let DecodingError.valueNotFound(_, context),
+             let DecodingError.dataCorrupted(context):
+            return context.debugDescription
+        case let DecodingError.keyNotFound(key, context):
+            return "\(key.stringValue): \(context.debugDescription)"
+        default:
+            return error.localizedDescription
+        }
     }
 }

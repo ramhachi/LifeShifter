@@ -6,7 +6,9 @@
 	<string>com.sota.lifeshifter</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/sota/Applications/LifeShifter.app/Contents/MacOS/LifeShifter</string>
+		<string>/usr/bin/open</string>
+		<string>-gj</string>
+		<string>/Users/sota/Applications/LifeShifter.app</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

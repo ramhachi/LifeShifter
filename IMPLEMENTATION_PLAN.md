@@ -2,7 +2,7 @@
 
 更新日: 2026-08-17
 
-状態: Mac MVP 実装済み・Google認証完了後の実アカウント検証待ち
+状態: Mac MVP 実装済み・Google認証と実Activity取得を確認済み
 
 正本: この文書のみ
 
@@ -10,7 +10,7 @@
 
 - Phase 0: 公開WebクライアントとAPI `OPTIONS` から通信契約を確認済み
 - Phase 1: Mac常駐MVP、公式Web画面でのGoogle認証、Keychainへのtoken保存、固定パレット、30秒同期、LaunchAgentを実装済み
-- 残作業: LifeShifterへの実アカウントログイン後、Activity取得とswitchを実測
+- 残作業: 実記録を変更してよいタイミングでswitchを実測
 
 ## 1. 結論
 
