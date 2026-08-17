@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class LifeShifterStore: ObservableObject {
-    static let preferredActivityNames = ["研究", "Oedo", "業務", "就活", "TOEIC", "学習", "ジム", "移動", "生活", "休憩", "睡眠"]
+    static let targetActivityNames = ["研究", "TOEIC", "就活", "仕事", "運動", "対人・私用", "娯楽", "生活", "睡眠"]
 
     @Published private(set) var activities: [Activity] = []
     @Published private(set) var currentEntry: CurrentEntry?
@@ -45,7 +45,13 @@ final class LifeShifterStore: ObservableObject {
     }
 
     var displayedActivities: [Activity] {
-        Array(Self.orderActivities(activities.filter(\.trackable)).prefix(8))
+        Self.selectTargetActivities(from: activities)
+    }
+
+    var missingActivityNames: [String] {
+        Self.targetActivityNames.filter { name in
+            !activities.contains { $0.trackable && $0.name == name }
+        }
     }
 
     var elapsedText: String {
@@ -145,13 +151,10 @@ final class LifeShifterStore: ObservableObject {
         }
     }
 
-    static func orderActivities(_ activities: [Activity]) -> [Activity] {
-        let preferred = preferredActivityNames.map { $0.lowercased() }
-        return activities.enumerated().sorted { left, right in
-            let leftRank = preferred.firstIndex(of: left.element.name.lowercased()) ?? Int.max
-            let rightRank = preferred.firstIndex(of: right.element.name.lowercased()) ?? Int.max
-            return leftRank == rightRank ? left.offset < right.offset : leftRank < rightRank
-        }.map(\.element)
+    static func selectTargetActivities(from activities: [Activity]) -> [Activity] {
+        targetActivityNames.compactMap { name in
+            activities.first { $0.trackable && $0.name == name }
+        }
     }
 
     static func formatElapsed(seconds: Int) -> String {
@@ -172,7 +175,7 @@ struct LifeShifterView: View {
             }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 420)
     }
 
     private var tracker: some View {
@@ -190,14 +193,14 @@ struct LifeShifterView: View {
                     .font(.system(.title3, design: .monospaced).weight(.semibold))
             }
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 10) {
                 ForEach(Array(store.displayedActivities.enumerated()), id: \.element.id) { index, activity in
                     modeButton(activity, index: index)
                 }
             }
 
-            if store.activities.isEmpty, !store.isBusy {
-                Text("切り替え可能なActivityがありません")
+            if !store.missingActivityNames.isEmpty, !store.isBusy {
+                Text("不足しているActivity: \(store.missingActivityNames.joined(separator: "、"))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -311,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configurePanel() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -327,7 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrameAutosaveName("LifeShifterPanel")
         panel.contentViewController = NSHostingController(rootView: LifeShifterView(store: store))
         if !panel.setFrameUsingName("LifeShifterPanel"), let screen = NSScreen.main {
-            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX - 340, y: screen.visibleFrame.maxY - 450))
+            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX - 440, y: screen.visibleFrame.maxY - 380))
         }
     }
 
@@ -367,17 +370,16 @@ enum SelfCheck {
         let noCurrent = try decoder.decode(CurrentEntry?.self, from: Data("null".utf8))
         precondition(noCurrent == nil)
 
-        let response = try decoder.decode(SwitchResponse.self, from: Data(#"{"new_entry":{"id":10,"activity_id":8,"activity_name":"ジム","activity_icon":null,"activity_icon_color":null,"start_time":"2026-08-17T09:00:00Z","end_time":null,"is_active":true}}"#.utf8))
-        precondition(response.newEntry.activityName == "ジム")
+        let response = try decoder.decode(SwitchResponse.self, from: Data(#"{"new_entry":{"id":10,"activity_id":8,"activity_name":"運動","activity_icon":null,"activity_icon_color":null,"start_time":"2026-08-17T09:00:00Z","end_time":null,"is_active":true}}"#.utf8))
+        precondition(response.newEntry.activityName == "運動")
         let switchBody = try JSONSerialization.jsonObject(with: JSONEncoder().encode(SwitchRequest(activityID: 8))) as? [String: Int]
         precondition(switchBody == ["activity_id": 8])
 
-        let ordered = LifeShifterStore.orderActivities([
-            Activity(id: 1, name: "その他", icon: nil, iconColor: nil, parentID: nil, trackable: true),
-            Activity(id: 2, name: "ジム", icon: nil, iconColor: nil, parentID: nil, trackable: true),
-            activity
-        ])
-        precondition(ordered.map { $0.name } == ["研究", "ジム", "その他"])
+        let configuredActivities = LifeShifterStore.targetActivityNames.enumerated().map { index, name in
+            Activity(id: index + 1, name: name, icon: nil, iconColor: nil, parentID: nil, trackable: true)
+        }
+        precondition(Set(LifeShifterStore.targetActivityNames).count == 9)
+        precondition(LifeShifterStore.selectTargetActivities(from: Array(configuredActivities.reversed())).map(\.name) == LifeShifterStore.targetActivityNames)
         let tokens = try GoogleAuthWindow.decodeTokens(from: #"{"access":"test-access","refresh":"test-refresh"}"#)
         precondition(tokens == GoogleTokens(access: "test-access", refresh: "test-refresh"))
         let fieldError = TimetrackerClient.errorMessage(from: Data(#"{"activity_id":["Invalid activity."]}"#.utf8))

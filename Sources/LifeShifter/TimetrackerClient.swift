@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 struct Activity: Codable, Identifiable, Equatable {
     let id: Int
@@ -101,11 +100,12 @@ enum TimetrackerError: LocalizedError {
 }
 
 enum TokenStore {
-    private static let service = "com.sota.lifeshifter"
-    private static let tokenAccount = "tokens"
     private static let lock = NSLock()
     private static var didLoad = false
     private static var cachedTokens: StoredTokens?
+    private static let tokenURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("LifeShifter", isDirectory: true)
+        .appendingPathComponent("tokens.json")
 
     static var hasAccessToken: Bool { accessToken() != nil }
 
@@ -114,8 +114,14 @@ enum TokenStore {
 
     static func save(access: String, refresh: String) throws {
         let tokens = StoredTokens(access: access, refresh: refresh)
-        let value = String(decoding: try JSONEncoder().encode(tokens), as: UTF8.self)
-        try write(value, account: tokenAccount)
+        let directory = tokenURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try JSONEncoder().encode(tokens).write(to: tokenURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
         lock.lock()
         cachedTokens = tokens
         didLoad = true
@@ -123,7 +129,7 @@ enum TokenStore {
     }
 
     static func clear() {
-        delete(account: tokenAccount)
+        try? FileManager.default.removeItem(at: tokenURL)
         lock.lock()
         cachedTokens = nil
         didLoad = true
@@ -139,53 +145,10 @@ enum TokenStore {
         lock.lock()
         defer { lock.unlock() }
         if !didLoad {
-            cachedTokens = read(account: tokenAccount)
-                .flatMap { try? JSONDecoder().decode(StoredTokens.self, from: Data($0.utf8)) }
+            cachedTokens = try? JSONDecoder().decode(StoredTokens.self, from: Data(contentsOf: tokenURL))
             didLoad = true
         }
         return cachedTokens
-    }
-
-    private static func read(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func write(_ value: String, account: String) throws {
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let data = Data(value.utf8)
-        let status = SecItemUpdate(lookup as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = lookup
-            item[kSecValueData as String] = data
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-                throw TimetrackerError.invalidResponse
-            }
-        } else if status != errSecSuccess {
-            throw TimetrackerError.invalidResponse
-        }
-    }
-
-    private static func delete(account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
     }
 }
 

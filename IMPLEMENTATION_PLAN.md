@@ -2,14 +2,15 @@
 
 更新日: 2026-08-17
 
-状態: Mac MVP 実装済み・Google認証、実Activity取得、switchを確認済み
+状態: Mac MVP 実装済み・9分類への移行済み
 
 正本: この文書のみ
 
 実装状況（2026-08-17）:
 
 - Phase 0: 公開WebクライアントとAPI `OPTIONS` から通信契約を確認済み
-- Phase 1: Mac常駐MVP、公式Web画面でのGoogle認証、Keychainへのtoken保存、固定パレット、30秒同期、LaunchAgentを実装済み
+- Phase 1: Mac常駐MVP、公式Web画面でのGoogle認証、権限600でのtoken保存、3×3固定パレット、30秒同期、LaunchAgentを実装済み
+- 分類移行: 研究、TOEIC、就活、仕事、運動、対人・私用、娯楽、生活、睡眠の9分類を作成し、旧分類は履歴を保持して削除済み
 - Phase 2候補: 継続運用で必要になった場合のみ障害系とclick-to-visual-feedbackを追加測定
 
 ## 1. 結論
@@ -47,7 +48,7 @@ Mac で目指す操作は次の一連だけである。
 現在状態を視認 → 固定位置の活動を1クリック → 即時に選択表示が変わる
 ```
 
-開始・停止・活動選択を別々に操作させない。原則として「停止」は作らず、休憩・生活・睡眠も活動として切り替える。
+開始・停止・活動選択を別々に操作させない。原則として「停止」は作らず、生活・睡眠も活動として切り替える。
 
 ## 3. 確定したスコープ
 
@@ -60,7 +61,7 @@ Mac で目指す操作は次の一連だけである。
 - クリック直後のローカル表示更新と非同期の Timetracker 同期
 - 小さな同期中・失敗表示
 - 起動時、スリープ復帰時、一定間隔での Timetracker 状態更新
-- 認証情報の Keychain 保存
+- Timetracker token の権限600ローカル保存
 - 公式 Timetracker 画面を使った Google ログイン
 - ログイン時の自動起動
 
@@ -97,7 +98,7 @@ Mac MVP は SwiftPM の単一 executable とし、AppKit / SwiftUI の標準機�
 - `NSPanel`: 1クリック切替用の小型パレット
 - `LSUIElement`: Dock に通常アプリとして表示しない
 - `UserDefaults`: パネル位置、表示状態、活動順序など非機密設定
-- Keychain: 認証情報
+- Application Support: Timetracker token（ファイル権限600）
 - `URLSession`: Timetracker 通信
 - `WKWebView`: 公式 Timetracker の Google 認証画面のみ
 
@@ -111,20 +112,21 @@ WidgetKit はシステム管理の更新制約、App Extension、署名、共有
 
 ### 5.1 固定配置
 
-活動は 2 列の固定位置に置き、実装後に自動で並べ替えない。
+活動は 3 列×3行の固定位置に置き、Timetracker の返却順では並べ替えない。
 
 ```text
-┌────────────────────────┐
-│ NOW: 研究       1h 24m │
-│                        │
-│  研究          Oedo    │
-│  就活          TOEIC   │
-│  ジム          移動    │
-│  生活          休憩    │
-└────────────────────────┘
+┌──────────────────────────────────┐
+│ NOW: 研究              1:24:00   │
+│                                  │
+│  研究       TOEIC      就活      │
+│  仕事       運動       対人・私用 │
+│  娯楽       生活       睡眠      │
+└──────────────────────────────────┘
 ```
 
-初期候補は研究、Oedo / 業務、就活、TOEIC / 学習、ジム、移動、生活、休憩の 8 モードとする。睡眠を含む最終名称・Timetracker Activity ID・配置は UI 実装前に確定する。
+主分類は、時間の投下先を表す `研究`、`TOEIC`、`就活`、`仕事`、`運動`、`対人・私用`、`娯楽`、`生活`、`睡眠` の9個に固定する。`成果`、`成長`、`回復`、`外部拘束` などは入力ボタンにせず、将来必要になった場合の分析属性とする。
+
+名前は完全一致で照合する。該当 Activity が不足する場合は他の Activity を表示せず、不足名を画面に示す。Activity ID はサーバーから取得するためローカル設定へ固定しない。
 
 ### 5.2 表示と操作
 
@@ -163,7 +165,7 @@ user selects new_mode
 - `LSUIElement: true` の `.app` bundle
 - release build と LaunchAgent によるログイン時起動
 
-予定構成は必要最小限にする。
+構成は必要最小限にし、UI・通信・認証の3責務だけを分ける。
 
 ```text
 日々のFB管理APP/
@@ -175,19 +177,16 @@ user selects new_mode
 ├── AppInfo.plist
 ├── Sources/LifeShifter/
 │   ├── main.swift
-│   ├── LifeShifterStore.swift
 │   ├── TimetrackerClient.swift
-│   └── LifeShifterView.swift
-├── Resources/
-│   └── modes.json
+│   └── GoogleAuthWindow.swift
 ├── docs/
 │   ├── timetracker-protocol.md
 │   └── measurements.md
 ├── local/                       # git 管理外。HAR、Cookie、調査用データ
-└── run.sh
+└── install.sh
 ```
 
-`modes.json` は `{activity_id, label, symbol, row, column}` だけを持つ。macOS 標準の `Codable` で読み、設定画面や独自スキーマ基盤は作らない。
+9分類は小さな静的配列としてコードに置く。設定ファイル、設定画面、独自スキーマは必要になるまで作らない。
 
 ## 7. 実装工程
 
@@ -216,11 +215,11 @@ user selects new_mode
 ### Phase 1 — Mac UI MVP
 
 1. `../勤怠管理` の最小構成を基に常駐アプリを作る。
-2. `modes.json` の固定配置で `NSPanel` と popover を描画する。
+2. 9分類の静的な固定配置で `NSPanel` と popover を描画する。
 3. `TimetrackerClient` に確認済みの current / switch だけを実装する。
 4. `LifeShifterStore` で optimistic update、revision、pending / error を管理する。
 5. 起動時、スリープ復帰時、パネル表示時、30 秒間隔で current state を更新する。
-6. 公式 Timetracker 画面で Google 認証し、Timetrackerが発行したtokenのみを Keychain に保存する。
+6. 公式 Timetracker 画面で Google 認証し、Timetrackerが発行したtokenのみを権限600で Application Support に保存する。未署名MVPでは更新のたびに承認が発生するため Keychain は使わない。
 7. release `.app` を作り、ログイン時起動を設定する。
 
 WebSocket は 30 秒ポーリングで実用上の問題が確認された場合だけ追加する。履歴取得や日次集計は MVP に含めない。
@@ -268,7 +267,7 @@ Mac UI が継続利用できた後に、実際の既存 Google Sheets / 日次 F
 
 | 対象 | 最小の検証 |
 |---|---|
-| mode 設定 | JSON decode、重複 ID / 座標、未知 ID の検査 |
+| mode 設定 | 9分類の重複、順序、名前の完全一致を `--self-check` で検査 |
 | 状態管理 | optimistic update、古い response の破棄、失敗時の再取得 |
 | Timetracker 契約 | current / switch の smoke test と履歴の目視確認 |
 | UI | 固定配置、1クリック、VoiceOver、パネル位置の復元 |

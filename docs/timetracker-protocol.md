@@ -31,7 +31,7 @@ API は未認証時に HTTP 401 と `WWW-Authenticate: Bearer realm="api"` を�
 
 LifeShifter は `WKWebView` で公式 `https://timetracker.live/signin` を開く。Google Identity Services のポップアップも別 `WKWebView` として開き、公式ページに認証結果を返す。
 
-認証完了後、現在ページの scheme と host が正確に `https://timetracker.live` である場合に限り、同一originの `localStorage` から `access_token` と `refresh_token` を取得し、macOS Keychain へ保存する。Googleのcredential、ChromeのCookie、ChromeのlocalStorageは読まない。
+認証完了後、現在ページの scheme と host が正確に `https://timetracker.live` である場合に限り、同一originの `localStorage` から `access_token` と `refresh_token` を取得し、Application Support の権限600ファイルへ保存する。Googleのcredential、ChromeのCookie、ChromeのlocalStorageは読まない。未署名MVPの更新時に承認待ちを繰り返さないため、Keychainは使用しない。
 
 この方式は公式Webクライアントの現行実装に依存する。公式クライアントのtoken保存方式が変更された場合は再検証が必要。
 
