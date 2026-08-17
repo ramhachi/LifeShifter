@@ -1,284 +1,310 @@
-# LifeShifter 実装計画
+# LifeShifter 統合実装計画
 
-## Context
+更新日: 2026-08-17
 
-`CODEX_LifeShifter_Implementation_Brief.md` にある要件を実装可能な工程に落とす。作るのはライフログ SaaS ではなく、**Timetracker を記録エンジンとして再利用する超低摩擦の操作 UI（Android Widget / Mac Widget）**。成功条件は機能量ではなく「数週間〜数ヶ月、活動切替を苦痛なく継続できること」なので、全工程を **tap→視覚反応の速さ** と **摩擦の少なさ** で評価する。
+状態: 実装前・方針確定
 
-### 環境の実測結果（計画の前提）
+正本: この文書のみ
 
-| 項目 | 状態 | 影響 |
-|---|---|---|
-| Android SDK / Studio / gradle | **無し** | 工程 1 でセットアップが必要 |
-| JDK | **11 のみ**（Corretto 11） | AGP 8 系は 17+ 必須 → JDK 17 導入 |
-| Xcode / Swift | 26.3 / 6.2.4、macOS 26.3 | Mac 側は即着手可能 |
-| Timetracker Mac アプリ | 未インストール | プロトコル調査は **Web 版**から行う |
-| git | 未初期化 | 工程 0 で `git init` |
-| ffmpeg | 無し | tap→視覚の実測に必要 → 導入 |
-| ActivityWatch | 未インストール | Phase 3 まで不要 |
+## 1. 結論
 
-### 流用できる既存資産
+LifeShifter は新しいライフログサービスではない。**Timetracker を記録元として使い続け、Mac に不足している低摩擦の操作 UI だけを追加する。**
 
-`../勤怠管理` に **macOS 常駐アプリの完成したビルドパターン**がある。Phase 2 でそのまま踏襲する。
+追加調査により、スマートフォンでは Timetracker アプリを起動しておけば既存 Widget でも許容できる応答速度で記録できると分かった。このため、以前の計画にあった Android 自作 Widget は実装しない。
 
-- `../勤怠管理/Package.swift` — SwiftPM 単体 executableTarget
-- `../勤怠管理/Sources/AttendanceApp/main.swift:4` — `NSStatusItem` + `NSPopover` + `NSApp.setActivationPolicy(.accessory)` のメニューバー常駐パターン
-- `../勤怠管理/Sources/AttendanceApp/main.swift:47` `AttendanceStore` — 「進行中の開始時刻を `UserDefaults` に永続化し、確定時にログへ追記」という構造。LifeShifter の `current_state` + イベントログとほぼ同型
-- `../勤怠管理/run.sh` — `swift build -c release` → 無署名 `.app` 手組み → launchd `bootstrap` で自動起動
-- `../勤怠管理/AppInfo.plist` — `LSUIElement: true`
+| 対象 | 方針 |
+|---|---|
+| スマートフォン | 既存の Timetracker アプリと Widget をそのまま使う |
+| Mac | 固定配置の活動パレットとメニューバー UI を実装する |
+| 記録・履歴・同期 | Timetracker を唯一の正本とする |
+| 日次 FB 連携 | Mac UI の継続運用が確認できた後に別フェーズで判断する |
 
-### ユーザー確定事項
+成功条件は機能数ではなく、活動が変わるたびに数週間から数か月、苦痛なく記録を続けられることとする。
 
-1. **Android 先行**（ブリーフ §16 通り）
-2. 記録エンジンは **Adapter 差し替え可能にして着手** — Phase 0 の結果を待たずに UI 実装へ進む
-3. Timetracker は **Web 版にログイン可能** → HAR 取得ルートが使える
-4. Mac は **WidgetKit デスクトップウィジェット**
-5. Android 環境は **cmdline-tools + CLI ビルド**
-6. モード名・順序は**調整したい** → 設定ファイル駆動にし、確定は工程 3 の着手前
+## 2. 解決したい問題
 
----
+後からフォームに一日分を思い出して入力する方法は摩擦と記憶誤差が大きい。入力モデルを「現在の活動を一つだけ持ち、活動が変わった瞬間に切り替える」有限状態機械へ変える。
 
-## 設計上の中核判断
+```text
+current_mode = RESEARCH
 
-### A. 遅延の主因はプロセスのコールドスタート（最重要）
+switch_to(GYM)
 
-Glance の `ActionCallback` の経路は次の通り。
-
-```
-Widget tap → PendingIntent broadcast → アプリプロセス起動 → onAction()
-          → 状態書き込み → 再コンポーズ → RemoteViews 再送 → ランチャー再描画
+=> RESEARCH.end = now
+=> GYM.start = now
+=> current_mode = GYM
 ```
 
-プロセスが死んでいると**ここにコールドスタートが挟まる**。これが公式 Timetracker Widget が「もっさり」する最有力の原因（§26-8 の未確認事項に対する仮説）であり、Capacitor 製ならさらに悪化する。つまり **Glance を使うか否かより、プロセスを温存するかどうかが 100ms 級の成否を決める**。
+Mac で目指す操作は次の一連だけである。
 
-対策を 3 段構えで入れる。
-
-1. **低重要度の前景サービス + 常駐通知**を持つ。プロセスが常に温まるので broadcast がウォームディスパッチになる。副作用として通知のアクションボタンが**ロック画面から使える 2 番目の切替面**になり、ホーム画面へ戻る必要がなくなる（Widget より摩擦が低い場面が多い）
-2. **書き込みを同期にする** — 状態は `SharedPreferences.commit()` 相当の同期書き込みで確定させ、DataStore の非同期完了を待たずに `update()` を呼ぶ
-3. **リリースビルドで計測・運用する** — debuggable ビルドは JIT/アサーション分だけ遅い。体感評価を debug ビルドで行わない
-
-そのうえで **Glance で実装 → 即計測 → 目標未達なら手書き RemoteViews + `partiallyUpdateAppWidget` に切り替える**（フォールバック経路を工程 4 に明記）。ブリーフ §5.1 の指定は Glance なので、まず Glance で試すのが順序として正しい。
-
-### B. 記録エンジンを差し替え可能にする
-
-§9.4 の pending queue は**どちらの記録先を選んでも必要**なので、ローカル追記ログは追加コストではなく必然。これを記録エンジンそのものに昇格させる。
-
-```
-core (pure Kotlin / 端末非依存)
-  ModeCatalog        モード定義（shared/modes.json 由来）
-  SwitchStateMachine current_state + revision + 巻き戻し防止
-  EventLog           append-only JSONL（= pending queue = ローカル記録）
-  interface RecordBackend { listActivities / getCurrent / switch / getEntries / observe }
-        ├─ LocalRecordBackend        …EventLog のみ。常に動く
-        └─ TimetrackerBackend        …Phase 0 で確定した契約を実装
+```text
+現在状態を視認 → 固定位置の活動を1クリック → 即時に選択表示が変わる
 ```
 
-`core` は Android 依存ゼロにするので、状態機械と巻き戻し防止ロジックが JVM 上の高速ユニットテストで検証できる。§17 の「独自 SaaS backend を作らない」には触れない — サーバーではなく端末内の追記ファイル1本。
+開始・停止・活動選択を別々に操作させない。原則として「停止」は作らず、休憩・生活・睡眠も活動として切り替える。
 
-### C. モード定義は単一ソース
+## 3. 確定したスコープ
 
-`shared/modes.json` に `{id, label, icon, row, col}` を置き、Android / Mac / 集計スクリプトが同じものを読む。位置は運動記憶の根幹（§2.2）なので **`row`/`col` を固定データとして持ち、コードから座標を消す**。名前や順序の変更が1ファイルの編集で済む。
+### 実装するもの
 
----
+- macOS ネイティブ常駐アプリ
+- 現在モードと経過時間を表示するメニューバー項目
+- 全モードを固定位置に並べる常時表示可能な小型パレット
+- 1クリックの活動切替
+- クリック直後のローカル表示更新と非同期の Timetracker 同期
+- 小さな同期中・失敗表示
+- 起動時、スリープ復帰時、一定間隔での Timetracker 状態更新
+- 認証情報の Keychain 保存
+- ログイン時の自動起動
 
-## リポジトリ構成
+### 実装しないもの
 
-現ディレクトリ `/Users/sota/projects/apps/日々のFB管理APP` をリポジトリルートにする。
+- Android アプリ、Android Widget、常駐サービス、通知 UI
+- 独自アカウント、SaaS backend、データベース
+- Timetracker の履歴編集、統計、Goals、Activity 管理の再実装
+- 独自の端末間同期
+- WidgetKit 拡張、App Group、WebSocket を最初から導入すること
+- グラフ、テーマ機能、大規模な設定画面
+- 日次 FB、Google Sheets、ActivityWatch、LLM 要約を Mac MVP の blocker にすること
 
+スマートフォンと Mac の状態共有は Timetracker の既存同期に任せる。
+
+## 4. Ponytail に基づく実装判断
+
+### 4.1 既存 Mac クライアントを先に確認する
+
+最初に Timetracker 公式 Mac アプリのメニューバー操作を実測する。固定配置と十分な応答速度が既に得られるなら、自作 UI は作らずそこで終了する。
+
+自作へ進む条件は、少なくとも次のいずれかが確認された場合とする。
+
+- 活動切替までのクリック数が多い
+- 全活動の固定配置がなく、運動記憶で操作できない
+- 現在状態が常時見えない
+- 操作や描画の遅延が継続を妨げる
+
+### 4.2 WidgetKit より単純な常駐アプリを先に使う
+
+Mac MVP は SwiftPM の単一 executable とし、AppKit / SwiftUI の標準機能だけで構成する。
+
+- `NSStatusItem` + `NSPopover`: 現在状態と補助操作
+- `NSPanel`: 1クリック切替用の小型パレット
+- `LSUIElement`: Dock に通常アプリとして表示しない
+- `UserDefaults`: パネル位置、表示状態、活動順序など非機密設定
+- Keychain: 認証情報
+- `URLSession`: Timetracker 通信
+
+WidgetKit はシステム管理の更新制約、App Extension、署名、共有状態の設計が増える。`NSPanel` で利用上の問題が実測された場合にだけ再検討する。
+
+### 4.3 汎用基盤を作らない
+
+記録先は Timetracker 一つなので、複数 backend 用の interface やローカル代替 DB は作らない。ただし未公開通信仕様の変更を UI へ波及させないため、通信は具体型 `TimetrackerClient` 一か所に隔離する。
+
+## 5. UX 仕様
+
+### 5.1 固定配置
+
+活動は 2 列の固定位置に置き、実装後に自動で並べ替えない。
+
+```text
+┌────────────────────────┐
+│ NOW: 研究       1h 24m │
+│                        │
+│  研究          Oedo    │
+│  就活          TOEIC   │
+│  ジム          移動    │
+│  生活          休憩    │
+└────────────────────────┘
 ```
+
+初期候補は研究、Oedo / 業務、就活、TOEIC / 学習、ジム、移動、生活、休憩の 8 モードとする。睡眠を含む最終名称・Timetracker Activity ID・配置は UI 実装前に確定する。
+
+### 5.2 表示と操作
+
+- 現在モードを色だけでなく枠線、太字、アイコンでも示す
+- 現在モード、開始時刻、分単位の経過時間を表示する
+- 全モードを常時同じ位置に表示する
+- 確認ダイアログを出さない
+- 切替後に別ウィンドウや Timetracker アプリを前面に出さない
+- 意味のないアニメーションを入れない
+- キーボード操作と VoiceOver ラベルも用意する
+- パレットは表示 / 非表示と位置固定を切り替えられる
+
+### 5.3 切替処理
+
+```text
+user selects new_mode
+
+1. local current mode を即時更新し pending 表示
+2. UI を再描画
+3. Timetracker へ非同期で切替要求
+4. 成功時: server state で確定
+5. 失敗時: 小さな error 表示を出し canonical state を再取得
+```
+
+ネットワーク応答を UI の描画前に待たない。古いレスポンスで新しいローカル操作を巻き戻さないよう、各操作にローカル revision と要求時刻を持たせる。
+
+同じ活動を再度押した場合の扱いは Timetracker の実動作を確認して決める。推測で新しい区間を作らない。
+
+## 6. 技術構成
+
+隣接プロジェクト `../勤怠管理` にある次の実績済みパターンを再利用する。
+
+- SwiftPM の単一 `executableTarget`
+- `NSApplication` + `NSStatusItem` + `NSPopover`
+- `NSApp.setActivationPolicy(.accessory)`
+- `LSUIElement: true` の `.app` bundle
+- release build と LaunchAgent によるログイン時起動
+
+予定構成は必要最小限にする。
+
+```text
 日々のFB管理APP/
-├── IMPLEMENTATION_PLAN.md        ★この計画書そのもの（プロジェクト直下に配置）
+├── IMPLEMENTATION_PLAN.md
 ├── README.md
-├── AGENTS.md                     ブリーフ §11/§17/§20 を圧縮した不変則
-├── .gitignore                    local/ *.har secrets* .build/ *.keystore
-├── CODEX_LifeShifter_Implementation_Brief.md   （既存・出典として残す）
+├── AGENTS.md
+├── .gitignore
+├── Package.swift
+├── AppInfo.plist
+├── Sources/LifeShifter/
+│   ├── main.swift
+│   ├── LifeShifterStore.swift
+│   ├── TimetrackerClient.swift
+│   └── LifeShifterView.swift
+├── Resources/
+│   └── modes.json
 ├── docs/
-│   ├── timetracker-protocol.md   工程 2 の成果物
-│   ├── architecture.md
-│   └── measurements.md           tap→視覚の実測値ログ
-├── shared/
-│   └── modes.json                モード定義の単一ソース
-├── local/                        ★git 管理外。HAR・トークン・計測動画
-├── tools/timetracker-probe/      Node ESM・依存ゼロ
-│   ├── har-analyze.mjs
-│   ├── probe.mjs
-│   └── README.md
-├── android/
-│   ├── settings.gradle.kts / gradle/wrapper/
-│   ├── core/                     pure Kotlin（テスト対象）
-│   │   └── src/main/kotlin/.../{ModeCatalog,SwitchStateMachine,EventLog,RecordBackend}.kt
-│   │   └── src/test/kotlin/...   JUnit
-│   └── app/
-│       └── src/main/kotlin/.../
-│           ├── widget/{LifeShifterWidget,SwitchModeAction,WidgetLayout}.kt
-│           ├── state/{CurrentStateStore,PendingSyncStore,SecureTokenStore}.kt
-│           ├── service/{KeepWarmService,NotificationSwitcher}.kt
-│           ├── backend/{LocalRecordBackend,TimetrackerBackend,TimetrackerModels}.kt
-│           ├── sync/SyncWorker.kt
-│           └── settings/SettingsActivity.kt
-├── macos/                        Phase 2。Xcode プロジェクト
-└── scripts/
-    ├── measure-tap-latency.sh    screenrecord → フレーム差分
-    └── daily-aggregate.mjs       Phase 3
+│   ├── timetracker-protocol.md
+│   └── measurements.md
+├── local/                       # git 管理外。HAR、Cookie、調査用データ
+└── run.sh
 ```
 
----
+`modes.json` は `{activity_id, label, symbol, row, column}` だけを持つ。macOS 標準の `Codable` で読み、設定画面や独自スキーマ基盤は作らない。
 
-## 工程
+## 7. 実装工程
 
-### 工程 0 — リポジトリ骨組み（依存なし・すぐ終わる）
+### Phase 0 — 既存 UI の判定と通信契約の確認
 
-- **最初にこの計画書を `日々のFB管理APP/IMPLEMENTATION_PLAN.md` として配置する**（プロジェクト直下。以降の更新はこのファイルを正とする）
-- `git init`、`.gitignore`（**`local/`・`*.har`・`secrets*` を最初に入れる**。HAR にはセッション Cookie が入るので commit 事故を先に潰す）
-- `AGENTS.md` — 確認ダイアログ禁止 / 切替後にアプリを開かない / ネットワーク完了を UI が待たない / エンドポイントを推測しない / モードを増やさない、を短く列挙
-- `shared/modes.json` — 暫定で §2.2 の 8 モードを 2×4 で置く。**工程 3 着手前に確定させる**
-- `docs/architecture.md` — 上記 B の層構造を記述
+1. Timetracker 公式 Mac アプリを導入し、次を実測する。
+   - 現在状態の視認性
+   - 活動切替までのクリック数
+   - クリックから表示反映までの体感
+   - 固定配置の有無
+2. 既存 UI で十分なら、その結果をこの文書へ記録して自作を終了する。
+3. 不十分なら Web / Mac クライアントの実通信から次を確認する。
+   - 認証方式と更新方法
+   - Activity 一覧
+   - current running entry
+   - activity switch request
+   - history / entry 取得
+   - 競合時の server semantics
+   - 過去 timestamp を伴う再送の可否
+4. 結果を `docs/timetracker-protocol.md` に記録し、最小の read / switch smoke test を通す。
 
-### 工程 1 — Android ツールチェーン（工程 2 と並行実行可）
+エンドポイント、request schema、Cookie の流用可否を推測して実装しない。HAR、token、Cookie は `local/` にのみ保存し、値を文書や Git 履歴へ入れない。
 
-```sh
-brew install openjdk@17 android-commandlinetools ffmpeg
-sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-sdkmanager --licenses
-```
+**完了条件**: 公式 UI を採用するか自作するかの判断根拠が残り、自作の場合は current 取得と switch が再現可能になっている。
 
-- `local.properties` に `sdk.dir`、`JAVA_HOME` を 17 に固定（`android/gradle.properties` の `org.gradle.java.home` で明示してシェル環境に依存させない）
-- CMF Phone 2 Pro: 開発者オプション → USB デバッグ ON → `adb devices` で認証
-- **Nothing OS のバッテリー最適化からアプリを除外**する（常駐サービスが殺されると判断 A の効果が消える）。手順を `README.md` に記録
-- `settings.gradle.kts` + `core`/`app` の2モジュール雛形、`minSdk 31 / targetSdk 36`、Kotlin 2.x、Glance 1.1 系。バージョンは着手時に最新安定版を確認して決める
-- `./gradlew :app:assembleRelease` → `adb install` で**空 Widget が置ける**ところまで通す
+### Phase 1 — Mac UI MVP
 
-**完了条件**: ホーム画面に「Hello」だけの LifeShifter Widget を配置できる。
+1. `../勤怠管理` の最小構成を基に常駐アプリを作る。
+2. `modes.json` の固定配置で `NSPanel` と popover を描画する。
+3. `TimetrackerClient` に確認済みの current / switch だけを実装する。
+4. `LifeShifterStore` で optimistic update、revision、pending / error を管理する。
+5. 起動時、スリープ復帰時、パネル表示時、30 秒間隔で current state を更新する。
+6. 認証情報を Keychain に保存する。
+7. release `.app` を作り、ログイン時起動を設定する。
 
-### 工程 2 — Phase 0 プロトコル調査（工程 1 と並行実行可）
+WebSocket は 30 秒ポーリングで実用上の問題が確認された場合だけ追加する。履歴取得や日次集計は MVP に含めない。
 
-ここは**ユーザー操作が必須**。エンドポイントを推測して実装に埋めることは絶対にしない（§7 禁止事項）。
+**完了条件**:
 
-**ユーザーにお願いする採取手順**（`tools/timetracker-probe/README.md` に手順書として置く）
+- 表示中のパレットから1クリックで切り替えられる
+- 切替操作で通常のアプリウィンドウを開かない
+- クリック直後に選択状態が変わって見える
+- Timetracker 履歴に正しい区間が残る
+- スマートフォン側の変更が最大 30 秒程度で Mac に反映される
+- 失敗時に無言で成功扱いせず、小さなエラー状態が見える
+- ログイン後、実際の画面上で UI が利用可能になる
 
-1. Chrome で Timetracker Web 版にログイン
-2. DevTools → Network → **Preserve log を ON**、フィルタなし
-3. 次を順に実行: `/track` をリロード → 研究へ切替 → ジムへ切替 → 研究へ戻す → 履歴画面を開く
-4. Network パネル右クリック → **Save all as HAR with content** → `local/har/` に保存
-5. Application → Cookies / Local Storage の**キー名だけ**をメモ（値は不要）
+### Phase 2 — 信頼性と実運用検証
 
-**私が作るもの**
+次の条件を release build で確認し、結果を `docs/measurements.md` に残す。
 
-- `har-analyze.mjs` — HAR を読み、同一オリジンの XHR/fetch と WebSocket を抽出。method / path / status / 認証方式 / リクエスト body のキー構造 / レスポンスの形（キーと型）を表にする。**値は既定で伏せる**（`Bearer <redacted len=…>`）。出力から `docs/timetracker-protocol.md` の初稿を生成
-- `probe.mjs` — `list` / `current` / `switch <mode>` / `watch`（WS）を実行する最小 CLI。認証情報は `local/secrets.json`（git 管理外）から読む
+- 連続切替
+- Mac アプリ再起動
+- スリープ / 復帰
+- Wi-Fi OFF / 復帰
+- 認証期限切れ
+- スマートフォン側での切替後の再同期
+- Timetracker 側の一時的な server error
 
-**ここで必ず確認する分岐点**
+click-to-visual-feedback は画面収録のフレーム差分で測り、目標を 100 ms 級とする。通信完了時間は別に記録し、描画目標と混同しない。
 
-| 確認事項 | 影響先 |
+オフライン時は Phase 0 の結果で分岐する。
+
+- 過去 timestamp の replay が可能: 永続化した pending command を順番に再送する
+- replay 不可: 最新 current mode だけを再送し、失われる可能性のある区間を UI に明示する
+
+永続キューは必要性が確定した場合だけ追加する。
+
+**完了条件**: 7 日以上の試用で、記録漏れ・誤切替・起動失敗がなく、操作摩擦が継続を妨げない。
+
+### Phase 3 — 日次 FB 連携（保留）
+
+Mac UI が継続利用できた後に、実際の既存 Google Sheets / 日次 FB のスキーマを確認して別計画を作る。
+
+候補は Timetracker history の日単位集計であり、Google Form の画面自動操作はしない。ActivityWatch の PC context は「人間が選んだ活動」と別列にし、アプリ名から意図を自動決定しない。LLM 要約は明確な利用価値が確認されるまで追加しない。
+
+## 8. 検証方針
+
+| 対象 | 最小の検証 |
 |---|---|
-| switch に**過去 timestamp を渡せるか** | §9.4 のオフライン完全リプレイ可否。不可なら「復帰時に current mode だけ再送、欠損区間の復元は後回し」で確定 |
-| CSRF トークン / Origin 制限 / rate limit の有無 | `TimetrackerBackend` の必要ヘッダ |
-| トークンの寿命と更新方法 | 再認証 UI の要否 |
-| 競合時のサーバ挙動（別デバイスから同時 switch） | §13 の reconcile 方針 |
+| mode 設定 | JSON decode、重複 ID / 座標、未知 ID の検査 |
+| 状態管理 | optimistic update、古い response の破棄、失敗時の再取得 |
+| Timetracker 契約 | current / switch の smoke test と履歴の目視確認 |
+| UI | 固定配置、1クリック、VoiceOver、パネル位置の復元 |
+| 常駐動作 | `.app` 起動、ログイン後表示、スリープ復帰 |
+| 秘匿情報 | `git status` と `git log -p` に token / HAR / Cookie がないこと |
 
-**完了条件**: `probe switch` が安定して成功し、Timetracker Web の履歴に正しい区間として現れる。結果が `docs/timetracker-protocol.md` に記録されている。
+分岐やパーサなど非自明なロジックには、Swift 標準の `XCTest` か `--self-check` のどちらか一つ、最小の再現可能な検査を残す。
 
-**未達だった場合**: `LocalRecordBackend` のまま工程 3 へ進む（判断 B により手戻りなし）。`docs/timetracker-protocol.md` に「何が壁だったか」を残す。
+## 9. リスクと判断基準
 
-### 工程 3 — Phase 1 Android MVP
+1. **Timetracker の公開 API は未確認**
 
-着手前に **`shared/modes.json` の最終確定**（名前・順序・固定座標）。
+   private protocol に依存する場合は変更で壊れる。通信を `TimetrackerClient` に隔離し、本人のアカウントだけで利用する。
 
-1. **`core` を先に書く**（端末不要、テストしながら進む）
-   - `SwitchStateMachine.switchTo(modeId, now)` → 直前区間を閉じて新区間を開き `revision++`
-   - `reconcile(serverState)` — `revision`/`updatedAt` を比較し、**古いレスポンスで新しいローカル状態を巻き戻さない**（§13/§18）
-   - `EventLog` — JSONL 追記。`{command_id, device_id, mode_id, client_ts, revision, status, retry_count, synced_at}`
-   - `LocalRecordBackend` を `RecordBackend` の完全実装として通す
-   - JUnit: 状態遷移 / キュー順序 / 古いレスポンス破棄 / モード写像
-2. **Widget**（Glance）
-   - `modes.json` の `row`/`col` から 2×4 グリッドを組む。**位置はデータ由来、コードに座標を書かない**
-   - 上段に `NOW: 研究 / started 14:37 / 1h 24m`（§12 のとおり秒更新はしない。分単位で十分）
-   - 現在モードは**色だけでなく**枠線 + ウェイト + アイコンでも示す（§11）
-   - `SwitchModeAction : ActionCallback` — ① 同期で状態確定 → ② `update()` で即再描画 → ③ キュー追記 → ④ WorkManager 起動。**①②で UI は完了している**
-   - 確認ダイアログなし、Activity 起動なし、アニメーションなし
-3. **プロセス温存**（判断 A）
-   - `KeepWarmService` — `IMPORTANCE_LOW` の常駐通知。表示は `🔬 研究 1:24`
-   - 通知アクションに主要モードを並べ、**ロック画面から切替できる 2 番目の面**にする
-4. **同期と秘匿**
-   - `SyncWorker` — `NetworkType.CONNECTED` + 指数バックオフ。UI のクリティカルパスに置かない
-   - トークンは **Android Keystore の AES-GCM 鍵で暗号化して DataStore に格納**（非推奨化した `security-crypto` に依存しない）
-   - 失敗表示は Widget 隅の小さな pending/error インジケータのみ。巨大ダイアログは出さない（§18）
-5. **`SettingsActivity`**（最小）
-   - バックエンド選択（Local / Timetracker）、認証情報入力、**モード → Timetracker activity ID の写像**、接続テスト
+2. **認証情報の取得方法が未確認**
 
-**非目標（作らない）**: 統計、履歴エディタ、グラフ、Goals、テーマ設定。
+   公式の token flow がなければ、ブラウザ Cookie の安易なコピーを製品仕様にしない。安全かつ再現可能な方法が確認できなければ実装を止めて選択肢を見直す。
 
-### 工程 4 — 実機受け入れ計測
+3. **常時最前面パネルが邪魔になる可能性**
 
-体感を主観で判定しない。`scripts/measure-tap-latency.sh` で数値化する。
+   位置保存、非表示、全 Space 表示の切替だけを用意する。複雑なウィンドウ管理は作らない。
 
+4. **スマートフォンで Timetracker プロセスが終了すると遅延が戻る可能性**
+
+   これは自作 Android 開発の理由には直結させない。まず既存アプリの運用条件として記録し、許容できなくなった時だけ再評価する。
+
+5. **ポーリングでは端末間反映に遅延がある**
+
+   30 秒が実用上問題なら、確認済み WebSocket 契約か短い更新間隔を比較し、より単純で安定する方を選ぶ。
+
+## 10. 実装開始時の指示
+
+最初の実装タスクは Phase 0 のみとする。
+
+```text
+Timetracker 公式 Mac UI が LifeShifter の要求を満たすか実測し、
+満たさない項目を記録する。
+
+自作が必要と判断できた場合だけ、Web / Mac クライアントの実通信から
+auth、activity list、current entry、switch request、履歴、競合挙動を確認し、
+docs/timetracker-protocol.md と最小 smoke test を作る。
+
+確認できていない endpoint や request schema を推測しない。
+Android コード、独自 backend、履歴 UI、日次集計には着手しない。
 ```
-adb shell screenrecord --time-limit 20 /sdcard/t.mp4   （高フレームレート）
-→ adb pull → ffmpeg でフレーム分解
-→ タップ対象ボタン領域の画素差分が出た最初のフレーム番号 − タップフレーム番号
-→ フレーム数 × (1/fps) = tap→視覚 の実測値
-```
 
-§19 の条件を全て回す: cold widget tap / 連続切替 / アプリ kill 後 / 画面ロック解除後 / Wi-Fi 低速 / Wi-Fi OFF / モバイル回線 / バッテリー最適化 ON・OFF。結果を `docs/measurements.md` に残す。
-
-**受け入れ基準**（§16 Phase 1）
-
-- Widget のボタン1回で切替が完了する
-- Timetracker アプリが前面でなくても動く
-- サーバ応答前に選択状態が変わって見える
-- 「押したのに変わらない」と感じる状態が通常運用で発生しない
-- アプリを開く必要がない
-- Timetracker 履歴に正しく反映される（Timetracker バックエンド時）
-- ネットワーク断で UI が固まらない
-
-**目標未達時のフォールバック**: Glance を捨て、XML レイアウト + 手書き `RemoteViews` + `partiallyUpdateAppWidget` に置き換える。`core` と状態層は無変更で済むので影響は `widget/` に限定される。
-
-**この工程を通過するまで Phase 2 に進まない。** 公式 Widget より体感が良くならないなら自作の意味がない（§20）。
-
-### 工程 5 — Phase 2 Mac（WidgetKit）
-
-**先に 30 分のスパイクで署名可否を確認する。** WidgetKit ウィジェットは App Extension なので、`macos/` は SwiftPM ではなく Xcode プロジェクトになり、共有状態には App Group が必要。**App Group エンタイトルメントは無料の個人 Apple ID チームでは発行できない**ため、有料 Developer Program が無いとここで詰まる可能性がある。
-
-スパイクの内容: 最小のウィジェット拡張を作り、App Group 付きで実機ロードできるか確認する。
-
-- **通れば** ブリーフ §10 通りに実装 — `LifeShifterWidget` + `SwitchActivityIntent`（App Intents）+ `SharedStateStore`（App Group）+ `MenuBarExtra`
-- **通らなければ** 常時最前面のボーダレス `NSPanel`（`.floating` レベル・全 Space 参加）+ メニューバーに切り替える。`../勤怠管理/run.sh` の無署名 `.app` + launchd パターンがそのまま使え、署名もエンタイトルメントも不要。押した瞬間の再描画保証は WidgetKit より強い
-
-いずれの経路でも共通で作るもの:
-
-- Android と**同一の固定配置**（`shared/modes.json` を Swift 側でも読む）
-- 常駐ヘルパー（`../勤怠管理/main.swift:9` と同じ `LSUIElement` + `.accessory` 構成）が WebSocket を保持し、状態変化時に `WidgetCenter.shared.reloadTimelines(ofKind:)`
-- メニューバーに `🔬 研究 1:24` を常時表示
-- トークンは Keychain
-
-**受け入れ基準**: デスクトップから1クリックで切替 / アプリウィンドウを開かない / Android の切替が Mac に反映される / Mac の切替が Android に反映される。
-
-### 工程 6 — Phase 3 日次 FB 自動化
-
-Phase 1/2 の blocker にしない（§17）。着手時に**既存の日次 FB / Google Sheets のスキーマを先に確認する**（現状このリポジトリには無いので、シートの実物を見せてもらう工程が入る）。
-
-- `scripts/daily-aggregate.mjs` — Timetracker 履歴（または `EventLog`）を日単位でモード別合計に畳む
-- 既存の Google Form を自動操作せず、**回答先シート / 集計シートを互換レイヤとして扱う**（§14）
-- ActivityWatch は未インストール。導入後に「人間の意図（モード）」と「PC の実コンテキスト」を**別の列として並置**する。アプリ名から意図を自動推定しない（§15）
-- 任意で LLM による日次サマリ
-
----
-
-## 検証方法
-
-| 層 | 方法 |
-|---|---|
-| `core` ロジック | `./gradlew :core:test` — 状態遷移、キュー、古いレスポンス破棄、モード写像 |
-| Timetracker 契約 | `node tools/timetracker-probe/probe.mjs list / current / switch <mode> / watch` → Web 版の履歴で目視確認 |
-| Android 統合 | `./gradlew :app:assembleRelease && adb install -r` → 実機で §19 の条件行列を実行 |
-| tap→視覚 | `scripts/measure-tap-latency.sh` の実測値を `docs/measurements.md` に記録。主観判定しない |
-| Mac | ヘルパー起動 → Android で切替 → Mac 側の反映を確認、逆方向も確認、スリープ復帰と回線再接続も確認 |
-| 秘匿情報 | `git status` / `git log -p` に HAR・トークンが混入していないことを工程ごとに確認 |
-
----
-
-## 明示しておくリスク
-
-1. **Timetracker の公開 API は存在が未確認**（§26）。非公開 API に依存する場合、仕様変更で壊れる可能性を `README.md` に明記し、利用はユーザー自身のアカウントに限定する。判断 B により壊れてもローカル記録に退避できる
-2. **App Group エンタイトルメントが Mac WidgetKit の実質的な前提**。有料 Developer Program の有無で工程 5 の経路が変わる
-3. **Nothing OS のバッテリー管理**が常駐サービスを殺すと判断 A の効果が失われ、体感が公式 Widget と同程度に戻る恐れがある。工程 4 でバッテリー最適化 ON/OFF の両方を計測して影響を数値で確認する
-4. **`shared/modes.json` の確定が工程 3 の前提**。固定座標は運動記憶の根幹なので、後から順序を変えると学習がリセットされる
+Phase 0 の完了条件を満たすまで Phase 1 の本実装へ進まない。
