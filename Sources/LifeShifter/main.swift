@@ -15,6 +15,7 @@ final class LifeShifterStore: ObservableObject {
     @Published var now = Date()
 
     private let client = TimetrackerClient()
+    private var googleAuthWindow: GoogleAuthWindow?
     private var revision = 0
     private var clockTimer: Timer?
     private var refreshTimer: Timer?
@@ -58,24 +59,34 @@ final class LifeShifterStore: ObservableObject {
         return "\(currentEntry.activityName)  \(elapsedText)"
     }
 
-    func login(email: String, password: String) {
-        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanEmail.isEmpty, !password.isEmpty else {
-            errorMessage = "メールアドレスとパスワードを入力してください"
-            return
-        }
+    func loginWithGoogle() {
+        guard googleAuthWindow == nil else { return }
         isBusy = true
         errorMessage = nil
-        Task {
-            do {
-                try await client.login(email: cleanEmail, password: password)
-                authenticated = true
-                await loadFromServer()
-            } catch {
-                errorMessage = error.localizedDescription
+
+        let authWindow = GoogleAuthWindow { [weak self] result in
+            guard let self else { return }
+            self.googleAuthWindow = nil
+            switch result {
+            case let .success(tokens):
+                do {
+                    try TokenStore.save(access: tokens.access, refresh: tokens.refresh)
+                    self.authenticated = true
+                    Task {
+                        await self.loadFromServer()
+                        self.isBusy = false
+                    }
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    self.isBusy = false
+                }
+            case let .failure(error):
+                self.errorMessage = error.localizedDescription
+                self.isBusy = false
             }
-            isBusy = false
         }
+        googleAuthWindow = authWindow
+        authWindow.start()
     }
 
     func logout() {
@@ -250,35 +261,29 @@ struct LifeShifterView: View {
 
 private struct LoginView: View {
     @ObservedObject var store: LifeShifterStore
-    @State private var email = ""
-    @State private var password = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("LifeShifter").font(.title2.bold())
-            Text("Timetrackerへログイン")
+            Text("TimetrackerへGoogleでログイン")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            TextField("メールアドレス", text: $email)
-                .textFieldStyle(.roundedBorder)
-            SecureField("パスワード", text: $password)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { store.login(email: email, password: password) }
             if let error = store.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
             Button {
-                store.login(email: email, password: password)
+                store.loginWithGoogle()
             } label: {
                 if store.isBusy {
                     ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                 } else {
-                    Text("ログイン").frame(maxWidth: .infinity)
+                    Label("Googleでログイン", systemImage: "person.crop.circle.badge.checkmark")
+                        .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.borderedProminent)
             .disabled(store.isBusy)
-            Text("パスワードは保存しません。認証tokenのみKeychainへ保存します。")
+            Text("公式Timetrackerの認証画面を開きます。GoogleのパスワードはLifeShifterに保存しません。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -366,6 +371,8 @@ enum SelfCheck {
             activity
         ])
         precondition(ordered.map { $0.name } == ["研究", "ジム", "その他"])
+        let tokens = try GoogleAuthWindow.decodeTokens(from: #"{"access":"test-access","refresh":"test-refresh"}"#)
+        precondition(tokens == GoogleTokens(access: "test-access", refresh: "test-refresh"))
         precondition(TimetrackerClient.baseURL.absoluteString == "https://api.timetracker.live/api/")
         print("LifeShifter self-check passed")
     }

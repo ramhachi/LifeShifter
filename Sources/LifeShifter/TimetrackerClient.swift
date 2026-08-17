@@ -66,15 +66,6 @@ struct SwitchResponse: Decodable {
     }
 }
 
-private struct LoginResponse: Decodable {
-    let tokens: Tokens
-}
-
-private struct Tokens: Codable {
-    let access: String
-    let refresh: String
-}
-
 private struct RefreshResponse: Decodable {
     let access: String
     let refresh: String?
@@ -165,17 +156,6 @@ actor TimetrackerClient {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
-    func login(email: String, password: String) async throws {
-        struct LoginBody: Encodable { let email: String; let password: String }
-        let response: LoginResponse = try await request(
-            "auth/login/",
-            method: "POST",
-            body: LoginBody(email: email, password: password),
-            authenticated: false
-        )
-        try TokenStore.save(access: response.tokens.access, refresh: response.tokens.refresh)
-    }
-
     func listActivities() async throws -> [Activity] {
         try await request("activities/")
     }
@@ -196,20 +176,18 @@ actor TimetrackerClient {
     private func request<Response: Decodable>(
         _ endpoint: String,
         as type: Response.Type = Response.self,
-        authenticated: Bool = true,
         retryAfterRefresh: Bool = true
     ) async throws -> Response {
-        try await request(endpoint, method: "GET", bodyData: nil, as: type, authenticated: authenticated, retryAfterRefresh: retryAfterRefresh)
+        try await request(endpoint, method: "GET", bodyData: nil, as: type, retryAfterRefresh: retryAfterRefresh)
     }
 
     private func request<Response: Decodable, Body: Encodable>(
         _ endpoint: String,
         method: String,
-        body: Body,
-        authenticated: Bool = true
+        body: Body
     ) async throws -> Response {
         let bodyData = try encoder.encode(body)
-        return try await request(endpoint, method: method, bodyData: bodyData, as: Response.self, authenticated: authenticated, retryAfterRefresh: true)
+        return try await request(endpoint, method: method, bodyData: bodyData, as: Response.self, retryAfterRefresh: true)
     }
 
     private func request<Response: Decodable>(
@@ -217,14 +195,12 @@ actor TimetrackerClient {
         method: String,
         bodyData: Data?,
         as type: Response.Type,
-        authenticated: Bool,
         retryAfterRefresh: Bool
     ) async throws -> Response {
         guard let url = URL(string: endpoint, relativeTo: Self.baseURL) else {
             throw TimetrackerError.invalidResponse
         }
-        let token = authenticated ? TokenStore.accessToken() : nil
-        if authenticated && token == nil { throw TimetrackerError.signedOut }
+        guard let token = TokenStore.accessToken() else { throw TimetrackerError.signedOut }
 
         var urlRequest = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 10)
         urlRequest.httpMethod = method
@@ -232,12 +208,12 @@ actor TimetrackerClient {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("macos", forHTTPHeaderField: "X-Client-Type")
         urlRequest.setValue("2.3.1", forHTTPHeaderField: "X-Client-Version")
-        if let token { urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
         guard let http = response as? HTTPURLResponse else { throw TimetrackerError.invalidResponse }
-        if http.statusCode == 401, authenticated, retryAfterRefresh, try await refreshToken() {
-            return try await request(endpoint, method: method, bodyData: bodyData, as: type, authenticated: authenticated, retryAfterRefresh: false)
+        if http.statusCode == 401, retryAfterRefresh, try await refreshToken() {
+            return try await request(endpoint, method: method, bodyData: bodyData, as: type, retryAfterRefresh: false)
         }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 { TokenStore.clear() }

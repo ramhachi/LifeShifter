@@ -27,7 +27,15 @@ API は未認証時に HTTP 401 と `WWW-Authenticate: Bearer realm="api"` を�
 
 ## MVP で使う操作
 
-### Login
+### Google login（MVPで使用）
+
+LifeShifter は `WKWebView` で公式 `https://timetracker.live/signin` を開く。Google Identity Services のポップアップも別 `WKWebView` として開き、公式ページに認証結果を返す。
+
+認証完了後、現在ページの scheme と host が正確に `https://timetracker.live` である場合に限り、同一originの `localStorage` から `access_token` と `refresh_token` を取得し、macOS Keychain へ保存する。Googleのcredential、ChromeのCookie、ChromeのlocalStorageは読まない。
+
+この方式は公式Webクライアントの現行実装に依存する。公式クライアントのtoken保存方式が変更された場合は再検証が必要。
+
+### Email login（確認済み・MVPでは未使用）
 
 ```http
 POST auth/login/
@@ -85,7 +93,7 @@ WebSocket と offline replay は MVP に入れない。30秒ポーリングで�
 
 - 実アカウントでの response 全体
 - 過去 timestamp を伴う offline replay の正確な schema
-- Google / Apple OAuth を第三者 Mac クライアントから行うための正式なフロー
+- 独自OAuth clientとcallback URLを使う第三者Macクライアント向けの正式フロー
 - undocumented API の互換性保証
 
-ブラウザのtoken、Cookie、localStorageは読み取っていない。実アカウントのAPI検証はLifeShifter自身の正規ログイン後に行う。
+Chromeのtoken、Cookie、localStorageは読み取っていない。実アカウントのAPI検証はLifeShifter内の公式Timetracker画面でGoogleログインした後に行う。
