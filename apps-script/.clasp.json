@@ -1,0 +1,10 @@
+{
+  "scriptId": "15NK94_euP94HZqzpVfUfW1pTuntr6ye2yRo5cDEwViraCvOf9X7uwJJR",
+  "rootDir": ".",
+  "parentId": "1R6iD6601KfWTjdUlXwic-1hFkXJpM_iF8BtoTXdiz6w",
+  "scriptExtensions": [".js", ".gs"],
+  "htmlExtensions": [".html"],
+  "jsonExtensions": [".json"],
+  "filePushOrder": ["Code.gs", "appsscript.json"],
+  "skipSubdirectories": false
+}

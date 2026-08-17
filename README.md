@@ -2,6 +2,8 @@
 
 Timetracker の Activity を Mac から固定配置で切り替える、macOS 13+ 向けの小さな常駐 UI です。Android 側は Timetracker の既存アプリと Widget を使います。
 
+記録後の集計は `apps-script/Code.gs` がMaster SpreadsheetとGoogle Drive上のJSONへ保存します。日次・週次分析はChatGPT Webの定期タスクが両方を照合して実行するため、運用時にCodexやMacの常時起動は不要です。
+
 ## MVP
 
 - 3列×3行・9 Activity の固定パレット
@@ -35,3 +37,5 @@ Activity は次の9分類を名前の完全一致で照合し、常に同じ3×3
 Timetracker 側に不足する分類がある場合は、別カテゴリで穴埋めせず不足名を表示します。旧カテゴリは操作対象から削除済みですが、過去の時間記録は履歴・統計に保持しています。
 
 通信契約の根拠は [docs/timetracker-protocol.md](docs/timetracker-protocol.md) に記録しています。
+
+Life Log統合の導入手順とChatGPT用プロンプトは [apps-script/README.md](apps-script/README.md) と [docs/chatgpt-task-prompts.md](docs/chatgpt-task-prompts.md) に記録しています。
