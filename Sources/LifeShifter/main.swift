@@ -344,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(
             rootView: LifeShifterView(store: store, showPanel: { [weak self] in self?.panel.orderFrontRegardless() })
         )
+        popover.contentSize = NSSize(width: 420, height: 360)
         cancellable = store.$currentEntry.combineLatest(store.$now).sink { [weak self] _, _ in
             self?.statusItem.button?.title = self?.store.statusText ?? "LifeShifter"
         }
