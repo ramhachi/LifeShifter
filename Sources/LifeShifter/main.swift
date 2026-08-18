@@ -175,6 +175,7 @@ struct LifeShifterView: View {
             }
         }
         .padding(16)
+        .padding(.top, 8)
         .frame(width: 420)
     }
 
