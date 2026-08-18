@@ -198,6 +198,7 @@ struct LifeShifterView: View {
                     modeButton(activity, index: index)
                 }
             }
+            .frame(maxWidth: .infinity)
 
             if !store.missingActivityNames.isEmpty, !store.isBusy {
                 Text("不足しているActivity: \(store.missingActivityNames.joined(separator: "、"))")
