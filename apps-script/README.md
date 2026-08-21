@@ -16,3 +16,13 @@ Master Spreadsheetに紐づくApps Scriptプロジェクトへ `Code.gs` と `ap
 ```bash
 node tests/life_log_self_check.js
 ```
+
+## Smartwatch health ingest
+
+1. Apps Script editorで`configureHealthIngest('32文字以上のランダムsecret')`を一度実行する。
+2. Web Appを「自分として実行」でdeployし、URLと同じsecretをPersonal Hubへ設定する。
+3. Android側のHealth Connect権限とGadgetbridge `DataOrigin` packageを設定する。
+
+Web Appは受信したJSON文字列そのものをHMAC-SHA256で検証し、`issued_at`の5分窓、nonce再利用、`batch_id`重複を拒否する。書き込み対象は`health_daily`、`workout_sessions`、`raw_manifest`、`sync_audit`だけで、既存のフォーム・Timetrackerタブは変更しない。
+
+`GPT Context`には従来の`daily`/`weekly` v1に加えて、healthを`date_local`で左結合した`daily_v2`/`weekly_v2`を生成する。14日間のconsumer確認後、Script Property `LIFE_LOG_V1_ENABLED=false`を設定するとv1の新規更新だけを止められる。過去行・Driveファイルは削除しない。

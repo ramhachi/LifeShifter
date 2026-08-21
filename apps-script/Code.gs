@@ -8,7 +8,8 @@ const LIFE_LOG = Object.freeze({
   categories: ['研究', 'TOEIC', '就活', '仕事', '運動', '対人・私用', '娯楽', '生活', '睡眠'],
   sheets: {
     raw: 'Time Log Raw', actual: 'Daily Actual', reflection: 'Reflection Responses v2',
-    daily: 'Daily Log v2', context: 'GPT Context', legacy: 'フォームの回答 1'
+    daily: 'Daily Log v2', context: 'GPT Context', legacy: 'フォームの回答 1',
+    healthDaily: 'health_daily', workouts: 'workout_sessions', rawManifest: 'raw_manifest', syncAudit: 'sync_audit'
   }
 });
 
@@ -16,6 +17,59 @@ const RAW_HEADERS = ['entry_id', 'activity_id', 'activity_name', 'start_time_utc
 const ACTUAL_HEADERS = ['date', ...LIFE_LOG.categories.map(name => `${name}_min`), 'tracked_min', 'first_start_utc', 'last_end_utc', 'entry_count', 'calendar_span_min', 'generated_at_utc'];
 const DAILY_HEADERS = ['date', ...LIFE_LOG.categories.map(name => `${name}_min`), 'tracked_min', 'completed_progress', 'tomorrow_key_outcome', 'physical_energy', 'mood', 'focus', 'deviation_cause', 'reflection', 'notes', 'reflection_source', 'data_quality', 'generated_at_utc'];
 const CONTEXT_HEADERS = ['period_type', 'period', 'schema_version', 'generated_at_utc', 'source_hash', 'json'];
+const HEALTH_DAILY_HEADERS = ['date_local', 'timezone', 'source_id', 'device_model', 'steps_watch', 'distance_m', 'active_kcal', 'total_kcal', 'exercise_min', 'workout_count', 'hr_avg_bpm', 'hr_min_bpm', 'hr_max_bpm', 'resting_hr_bpm', 'spo2_avg_pct', 'spo2_min_pct', 'stress_avg', 'stress_max', 'sleep_start_at', 'sleep_end_at', 'sleep_total_min', 'sleep_deep_min', 'sleep_light_min', 'sleep_rem_min', 'sleep_awake_min', 'nap_min', 'data_completeness', 'provisional', 'updated_at', 'finalized_at', 'schema_version'];
+const WORKOUT_HEADERS = ['session_id', 'source_record_id', 'source_id', 'device_model', 'date_local', 'start_at', 'end_at', 'duration_sec', 'workout_type_raw', 'workout_type_norm', 'active_kcal', 'total_kcal', 'distance_watch_m', 'steps', 'hr_avg_bpm', 'hr_min_bpm', 'hr_max_bpm', 'hr_zone_1_sec', 'hr_zone_2_sec', 'hr_zone_3_sec', 'hr_zone_4_sec', 'hr_zone_5_sec', 'cadence_avg', 'cadence_max', 'speed_avg_mps', 'speed_max_mps', 'machine_distance_m', 'machine_incline_pct', 'machine_kcal', 'rpe', 'pain_flag', 'note', 'fit_archive_id', 'raw_archive_id', 'sync_status', 'updated_at', 'schema_version'];
+const RAW_MANIFEST_HEADERS = ['archive_id', 'drive_file_id', 'source_id', 'format', 'content_type', 'device_model', 'range_start', 'range_end', 'bytes', 'sha256', 'schema_version', 'uploaded_at', 'verified_at', 'retention_class'];
+const SYNC_AUDIT_HEADERS = ['sync_run_id', 'batch_id', 'issued_at', 'received_at', 'status', 'health_daily_upserted', 'workout_sessions_upserted', 'raw_manifest_upserted', 'error_code', 'error_message'];
+
+function configureHealthIngest(hmacSecret) {
+  if (!hmacSecret || hmacSecret.trim().length < 32) throw new Error('HMAC secretは32文字以上にしてください。');
+  PropertiesService.getScriptProperties().setProperty('SMARTWATCH_HEALTH_HMAC_SECRET', hmacSecret.trim());
+  ensureHealthSheets_();
+  return 'Health ingest configured in Script Properties.';
+}
+
+function doPost(event) {
+  const receivedAt = new Date();
+  const audit = { syncRunId: Utilities.getUuid(), batchId: '', issuedAt: '', receivedAt: receivedAt.toISOString(), status: 'ERROR', counts: [0, 0, 0], errorCode: '', errorMessage: '' };
+  let lock = null;
+  try {
+    const envelope = JSON.parse(event && event.postData && event.postData.contents || '{}');
+    const payloadText = String(envelope.payload || '');
+    const signature = String(envelope.signature || '').toLowerCase();
+    const secret = PropertiesService.getScriptProperties().getProperty('SMARTWATCH_HEALTH_HMAC_SECRET');
+    if (!secret) throw healthError_('SERVER_NOT_CONFIGURED', 'Health ingest secret is not configured.');
+    if (!payloadText || !constantTimeEqual_(signature, hmacSha256_(payloadText, secret))) throw healthError_('UNAUTHORIZED', 'HMAC signature mismatch.');
+
+    const payload = JSON.parse(payloadText);
+    validateHealthBatch_(payload, receivedAt);
+    audit.batchId = payload.batch_id;
+    audit.issuedAt = payload.issued_at;
+
+    lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    ensureHealthSheets_();
+    if (hasBatchId_(payload.batch_id)) throw healthError_('DUPLICATE_BATCH', 'batch_id has already been processed.');
+    const nonceCache = CacheService.getScriptCache();
+    if (nonceCache.get(`health_nonce:${payload.nonce}`)) throw healthError_('NONCE_REUSED', 'nonce has already been used.');
+    nonceCache.put(`health_nonce:${payload.nonce}`, '1', 600);
+
+    const healthCount = upsertHealthRows_(LIFE_LOG.sheets.healthDaily, HEALTH_DAILY_HEADERS, 'date_local', payload.health_daily);
+    const workoutCount = upsertHealthRows_(LIFE_LOG.sheets.workouts, WORKOUT_HEADERS, 'session_id', payload.workout_sessions);
+    const rawCount = upsertHealthRows_(LIFE_LOG.sheets.rawManifest, RAW_MANIFEST_HEADERS, 'archive_id', payload.raw_manifest);
+    audit.status = 'SUCCESS';
+    audit.counts = [healthCount, workoutCount, rawCount];
+    appendSyncAudit_(audit);
+    return jsonOutput_({ ok: true, batch_id: payload.batch_id, upserted: { health_daily: healthCount, workout_sessions: workoutCount, raw_manifest: rawCount } });
+  } catch (error) {
+    audit.errorCode = error.code || 'INTERNAL_ERROR';
+    audit.errorMessage = String(error.message || error).slice(0, 500);
+    try { ensureHealthSheets_(); appendSyncAudit_(audit); } catch (_) { /* Preserve the original error. */ }
+    return jsonOutput_({ ok: false, error: audit.errorCode, message: audit.errorMessage });
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Life Log')
@@ -206,9 +260,18 @@ function writeContexts_(dailyByDate) {
   const sheet = getSheet_(LIFE_LOG.sheets.context);
   const existing = readObjects_(sheet);
   const rowByKey = new Map(existing.map((row, index) => [`${row.period_type}:${row.period}`, index + 2]));
-  Object.values(dailyByDate).filter(item => item.date >= LIFE_LOG.cutoverDate).forEach(item => upsertContext_(sheet, rowByKey, 'daily', item.date, 'life_log_daily_v1', buildDailyContext_(item)));
+  const healthByDate = readHealthDailyByDate_();
+  const v1Enabled = PropertiesService.getScriptProperties().getProperty('LIFE_LOG_V1_ENABLED') !== 'false';
+  Object.values(dailyByDate).filter(item => item.date >= LIFE_LOG.cutoverDate).forEach(item => {
+    if (v1Enabled) upsertContext_(sheet, rowByKey, 'daily', item.date, 'life_log_daily_v1', buildDailyContext_(item));
+    upsertContext_(sheet, rowByKey, 'daily_v2', item.date, 'life_log_daily_v2', { ...buildDailyContext_(item), health: healthByDate[item.date] || null });
+  });
   const weekly = buildWeeklyContexts_(dailyByDate);
-  Object.keys(weekly).sort().forEach(period => upsertContext_(sheet, rowByKey, 'weekly', period, 'life_log_weekly_v1', weekly[period]));
+  Object.keys(weekly).sort().forEach(period => {
+    if (v1Enabled) upsertContext_(sheet, rowByKey, 'weekly', period, 'life_log_weekly_v1', weekly[period]);
+    const healthDays = weekly[period].days.map(day => ({ date_local: day.date, health: healthByDate[day.date] || null }));
+    upsertContext_(sheet, rowByKey, 'weekly_v2', period, 'life_log_weekly_v2', { ...weekly[period], health_days: healthDays });
+  });
 }
 
 function buildDailyContext_(item) {
@@ -295,6 +358,81 @@ function ensureDataSheets_() {
   ensureSheet_(spreadsheet, LIFE_LOG.sheets.daily, DAILY_HEADERS);
   ensureSheet_(spreadsheet, LIFE_LOG.sheets.context, CONTEXT_HEADERS);
 }
+
+function ensureHealthSheets_() {
+  const spreadsheet = SpreadsheetApp.openById(LIFE_LOG.spreadsheetId);
+  ensureSheet_(spreadsheet, LIFE_LOG.sheets.healthDaily, HEALTH_DAILY_HEADERS);
+  ensureSheet_(spreadsheet, LIFE_LOG.sheets.workouts, WORKOUT_HEADERS);
+  ensureSheet_(spreadsheet, LIFE_LOG.sheets.rawManifest, RAW_MANIFEST_HEADERS);
+  ensureSheet_(spreadsheet, LIFE_LOG.sheets.syncAudit, SYNC_AUDIT_HEADERS);
+}
+
+function validateHealthBatch_(payload, now) {
+  if (!payload || payload.schema_version !== 'health_batch_v1') throw healthError_('INVALID_SCHEMA', 'schema_version must be health_batch_v1.');
+  ['batch_id', 'issued_at', 'nonce'].forEach(key => { if (!payload[key] || typeof payload[key] !== 'string') throw healthError_('INVALID_REQUEST', `${key} is required.`); });
+  if (!/^[A-Za-z0-9:_-]{8,128}$/.test(payload.batch_id)) throw healthError_('INVALID_REQUEST', 'batch_id is invalid.');
+  if (!/^[0-9a-fA-F-]{16,64}$/.test(payload.nonce)) throw healthError_('INVALID_REQUEST', 'nonce is invalid.');
+  const issuedAt = new Date(payload.issued_at);
+  if (!Number.isFinite(issuedAt.getTime()) || Math.abs(now - issuedAt) > 5 * 60000) throw healthError_('STALE_REQUEST', 'issued_at is outside the five-minute window.');
+  validateHealthRows_(payload.health_daily, HEALTH_DAILY_HEADERS, 'date_local', 31);
+  validateHealthRows_(payload.workout_sessions, WORKOUT_HEADERS, 'session_id', 200);
+  validateHealthRows_(payload.raw_manifest, RAW_MANIFEST_HEADERS, 'archive_id', 100);
+}
+
+function validateHealthRows_(rows, headers, key, maxRows) {
+  if (!Array.isArray(rows) || rows.length > maxRows) throw healthError_('INVALID_REQUEST', `${key} rows are invalid.`);
+  const seen = new Set();
+  rows.forEach(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw healthError_('INVALID_REQUEST', `${key} row must be an object.`);
+    const value = String(row[key] || '');
+    if (!value || seen.has(value)) throw healthError_('INVALID_REQUEST', `${key} must be present and unique within a batch.`);
+    if (Object.keys(row).some(field => !headers.includes(field))) throw healthError_('INVALID_REQUEST', `${key} row contains an unknown field.`);
+    seen.add(value);
+  });
+}
+
+function upsertHealthRows_(sheetName, headers, key, incoming) {
+  if (!incoming.length) return 0;
+  const sheet = getSheet_(sheetName);
+  const merged = mergeUpsertRows_(readObjects_(sheet), incoming, key);
+  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).clearContent();
+  if (merged.length) sheet.getRange(2, 1, merged.length, headers.length).setValues(merged.map(row => headers.map(header => row[header] === null || row[header] === undefined ? '' : row[header])));
+  return incoming.length;
+}
+
+function mergeUpsertRows_(current, incoming, key) {
+  const byKey = new Map(current.map(row => [String(row[key]), { ...row }]));
+  incoming.forEach(row => byKey.set(String(row[key]), { ...row }));
+  return [...byKey.values()].sort((a, b) => String(a[key]).localeCompare(String(b[key])));
+}
+
+function readHealthDailyByDate_() {
+  const sheet = SpreadsheetApp.openById(LIFE_LOG.spreadsheetId).getSheetByName(LIFE_LOG.sheets.healthDaily);
+  if (!sheet) return {};
+  return Object.fromEntries(readObjects_(sheet).map(row => [normalizeSheetDate_(row.date_local), Object.fromEntries(HEALTH_DAILY_HEADERS.map(header => [header, row[header] === '' ? null : row[header]]))]));
+}
+
+function hasBatchId_(batchId) {
+  return readObjects_(getSheet_(LIFE_LOG.sheets.syncAudit)).some(row => String(row.batch_id) === batchId && String(row.status) === 'SUCCESS');
+}
+
+function appendSyncAudit_(audit) {
+  getSheet_(LIFE_LOG.sheets.syncAudit).appendRow([audit.syncRunId, audit.batchId, audit.issuedAt, audit.receivedAt, audit.status, ...audit.counts, audit.errorCode, audit.errorMessage]);
+}
+
+function hmacSha256_(payload, secret) {
+  return Utilities.computeHmacSha256Signature(payload, secret).map(byte => (byte + 256).toString(16).slice(-2)).join('');
+}
+
+function constantTimeEqual_(left, right) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return difference === 0;
+}
+
+function healthError_(code, message) { const error = new Error(message); error.code = code; return error; }
+function jsonOutput_(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }
 
 function ensureSheet_(spreadsheet, name, headers) {
   const sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
